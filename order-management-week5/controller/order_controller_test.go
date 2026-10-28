@@ -41,14 +41,18 @@ func TestParseIntQuery(t *testing.T) {
 		t.Fatalf("parseIntQuery(offset) = (%d, %v), want (3, nil)", offset, err)
 	}
 
-	c.Request = httptest.NewRequest(http.MethodGet, "/orders?offset=1", nil)
-	fallback, err := parseIntQuery(c, "limit", 20)
+	w2 := httptest.NewRecorder()
+	c2, _ := gin.CreateTestContext(w2)
+	c2.Request = httptest.NewRequest(http.MethodGet, "/orders?offset=1", nil)
+	fallback, err := parseIntQuery(c2, "limit", 20)
 	if err != nil || fallback != 20 {
 		t.Fatalf("parseIntQuery(fallback) = (%d, %v), want (20, nil)", fallback, err)
 	}
 
-	c.Request = httptest.NewRequest(http.MethodGet, "/orders", nil)
-	fallback, err = parseIntQuery(c, "limit", 20)
+	w3 := httptest.NewRecorder()
+	c3, _ := gin.CreateTestContext(w3)
+	c3.Request = httptest.NewRequest(http.MethodGet, "/orders", nil)
+	fallback, err = parseIntQuery(c3, "limit", 20)
 	if err != nil || fallback != 20 {
 		t.Fatalf("parseIntQuery(fallback) = (%d, %v), want (20, nil)", fallback, err)
 	}
