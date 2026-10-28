@@ -21,21 +21,21 @@ The application is split into four Go processes: Auth, API Gateway, Order, and P
    ```cmd
    consul agent -dev -client=127.0.0.1
    ```
-3. From the project root, start each process in a separate terminal. Each process loads the root `.env`; in PowerShell set `APP_PORT` per terminal so it is inherited by child processes:
-   ```powershell
-   $env:APP_PORT = "8083"
+3. From the project root, start each process in a separate terminal. Each process loads the root `.env`; `APP_PORT` is set per terminal:
+   ```cmd
+   set APP_PORT=8083
    go run ./cmd/auth-service
    ```
-   ```powershell
-   $env:APP_PORT = "4042"
+   ```cmd
+   set APP_PORT=8082
    go run ./cmd/product-service
    ```
-   ```powershell
-   $env:APP_PORT = "8081"
+   ```cmd
+   set APP_PORT=8081
    go run .
    ```
-   ```powershell
-   $env:APP_PORT = "8080"
+   ```cmd
+   set APP_PORT=8080
    go run ./cmd/api-gateway
    ```
 4. Check the Consul UI at `http://localhost:8500/ui/` and confirm `auth-service`, `product-service`, `order-service`, and `api-gateway` are healthy.
@@ -70,8 +70,8 @@ Content-Type: application/json
 
 Body :
 {
-  "username": "Sid",
-  "password": "Sid0123456789"
+  "username": "Ram",
+  "password": "Ram@0123456789"
 }
 
 4. Send order API requests through the Gateway at `http://localhost:8081`, with `Authorization: Bearer <customer-token>`.
@@ -96,7 +96,7 @@ The API base URL is `http://localhost:8080`. Its order operations are:
 - `GET /api/v1/orders` — list orders; optional `limit` and `offset` query parameters support pagination.
 - `PUT /api/v1/orders/{id}/status` — update an order status with a JSON body such as `{"status":"CONFIRMED"}`. `PATCH` is also supported for compatibility.
 
-Creating an order requires a product in the Product Service catalog. For example, the optional bootstrapped product has ID `501` and a sample price of `12.50`. Admins can add products using `POST http://localhost:4042/products` with an admin bearer token:
+Creating an order requires a product in the Product Service catalog. For example, the optional bootstrapped product has ID `501` and a sample price of `12.50`. Admins can add products using `POST http://localhost:8082/products` with an admin bearer token:
 
 ```json
 {"id":502,"name":"Another product","price":8.75}
@@ -157,6 +157,22 @@ Replace `1` with the existing order ID. Valid status values are `CREATED`, `CONF
 
 Successful requests return a JSON response with the selected fields under `data`, for example `data.order`, `data.orders`, `data.createOrder`, or `data.updateOrderStatus`. An invalid query or rejected operation returns GraphQL `errors`; the current HTTP handler responds with status `400` for GraphQL errors. GraphQL exposes the same order functionality as REST; it does not add product or user management operations.
 
+### Use GraphiQL in your browser
+
+The API Gateway serves the GraphiQL browser IDE at:
+
+```text
+http://localhost:8080/graphiql
+```
+
+Start the services as described above, then open that URL in your browser. The GraphiQL page loads its UI assets from public CDNs, so the browser needs internet access to load the interface. The API requests themselves go to the same Gateway origin at `/graphql`.
+
+1. Log in using `POST http://localhost:8083/auth/login` and copy the returned `accessToken`.
+2. Paste the token into the **JWT access token** field above the GraphiQL editor. Paste only the token value; the page adds the `Bearer` prefix.
+3. Run a query or mutation from the editor with the play button. The initial editor content lists the first 10 orders.
+
+The token field is not saved by this page. Requests are authenticated against the existing GraphQL API, so a customer token only sees or changes that customer’s own orders, while an admin token can access any customer’s orders. A missing, invalid, or expired token is rejected by the API.
+
 ## Product service resilience
 
 The order service calls `GET {PRODUCT_SERVICE_URL}/products/{productId}` (or discovers Product Service through Consul) with a per-attempt timeout and forwards the caller's validated JWT. `PRODUCT_TIMEOUT_MS` defaults to 2000 ms when unset or non-positive. `PRODUCT_RETRIES` is the number of retries after the first attempt; it is bounded from 0 to 5 (the example uses 2). Retries use exponential delays starting at 100 ms (100 ms, 200 ms, 400 ms, and so on), and stop immediately when the request context is canceled. HTTP 429 and 5xx responses and transport failures are retried; other 4xx responses are not.
@@ -179,6 +195,10 @@ docker compose up --build
 ```
 
 The Gateway is available at `http://localhost:8080`, Auth at `http://localhost:8083`, Product at `http://localhost:8082`, and Consul UI at `http://localhost:8500/ui/`. Stop the stack with `docker compose down`; add `-v` only if you intentionally want to delete the persisted local database volume.
+
+## Elastic Beanstalk Procfile
+
+The root `Procfile` starts the API Gateway as Elastic Beanstalk's `web` process. CodeBuild compiles that service to the root-level `application` executable and includes both files in the build artifact. Configure the Elastic Beanstalk environment with `APP_ENV=production`, `APP_PORT=5000`, a strong `JWT_SECRET`, `CONSUL_HTTP_ADDR`, and a reachable `SERVICE_ADDRESS`. The Auth, Order, and Product services must be deployed and reachable separately; this Procfile only starts the Gateway.
 
 ## Metrics
 
@@ -210,6 +230,16 @@ This is request-correlated application logging, not distributed tracing with spa
 The PostgreSQL repository uses a shared `pgxpool.Pool`; PostgreSQL statements use parameters, and each API operation issues only the queries required for that operation. The `orders.id` primary key supports single-order lookups and descending ID ordering for list requests. The schema also defines customer, status, and created-time indexes for filtering/reporting queries.
 
 `go test ./...` includes a test that submits 100 concurrent order-create requests against the thread-safe in-memory repository and verifies all requests succeed with unique IDs. To check for data races, run `go test -race ./...` in an environment with cgo and a C compiler installed.
+
+## Tests and CodeBuild
+
+Run all tests locally with:
+
+```bash
+go test -v ./...
+```
+
+The verbose output lists individual test cases for JWT authentication, GraphQL order operations and customer isolation, Auth and Product input/authorization checks, database configuration validation, password-hash JSON protection, repository customer scoping, Consul registration configuration, and concurrent order creation. CodeBuild uses the same command so the test names and results appear in its build logs. Go packages containing only service entrypoints or simple wiring may still display `[no test files]`; the overall build compiles those packages, while behavior is tested in the packages they call.
 
 ## Health checks
 

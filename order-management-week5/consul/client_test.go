@@ -64,7 +64,7 @@ func TestDiscoveryCacheIsSafeForConcurrentCallers(t *testing.T) {
 	var discoveries atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		discoveries.Add(1)
-		_, _ = w.Write([]byte(`[{"Node":{"Address":"127.0.0.1"},"Service":{"ID":"product-1","Address":"127.0.0.1","Port":4042}}]`))
+		_, _ = w.Write([]byte(`[{"Node":{"Address":"127.0.0.1"},"Service":{"ID":"product-1","Address":"127.0.0.1","Port":8082}}]`))
 	}))
 	defer server.Close()
 

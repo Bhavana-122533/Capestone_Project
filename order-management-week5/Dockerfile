@@ -15,5 +15,5 @@ FROM alpine:3.20
 RUN apk --no-cache add ca-certificates
 WORKDIR /app
 COPY --from=builder /out/ /app/
-EXPOSE 8080 8081 4042 8083
+EXPOSE 8080 8081 8082 8083
 ENTRYPOINT ["/app/order-service"]

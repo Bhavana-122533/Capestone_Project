@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	_ "embed"
 	"errors"
 	"io"
 	"log"
@@ -75,6 +76,10 @@ func main() {
 	})
 	router.GET("/health/ready", app.Ready)
 	router.GET("/metrics", middleware.PrometheusHandler())
+	router.GET("/graphiql", serveGraphiQL)
+	router.GET("/graphiql/", func(c *gin.Context) {
+		c.Redirect(http.StatusMovedPermanently, "/graphiql")
+	})
 
 	protected := authn.Middleware([]byte(cfg.JWTSecret))
 	router.Any("/api/v1", protected, app.Proxy)
@@ -110,6 +115,13 @@ func main() {
 		}
 		deregisterCancel()
 	}
+}
+
+//go:embed graphiql.html
+var graphiQLPage []byte
+
+func serveGraphiQL(c *gin.Context) {
+	c.Data(http.StatusOK, "text/html; charset=utf-8", graphiQLPage)
 }
 
 func (g *gateway) orderURL(ctx context.Context) (string, error) {

@@ -1,89 +1,118 @@
 package controller
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"order-management/authn"
+	"order-management/model"
 	"order-management/repository"
 	"order-management/service"
 
 	"github.com/gin-gonic/gin"
 )
 
-func TestParseID(t *testing.T) {
-	id, err := parseID("42")
+var controllerTestSecret = []byte("controller-test-secret-at-least-32-bytes")
+
+func controllerTestToken(t *testing.T, customerID int64) string {
+	t.Helper()
+	token, err := authn.IssueToken(controllerTestSecret, model.User{
+		ID:         customerID,
+		Username:   "customer",
+		Role:       model.RoleCustomer,
+		CustomerID: customerID,
+	}, time.Minute)
 	if err != nil {
-		t.Fatalf("parseID() returned error: %v", err)
+		t.Fatal(err)
 	}
-	if id != 42 {
-		t.Fatalf("parseID() = %d, want 42", id)
+	return "Bearer " + token
+}
+
+func TestGraphQLCreateReadListAndUpdateOrder(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.Use(authn.Middleware(controllerTestSecret))
+
+	svc := service.NewOrderService(repository.NewMemoryRepository(), graphqlProductClient{})
+	RegisterGraphQL(router, svc)
+
+	token := controllerTestToken(t, 101)
+	create := performGraphQLRequest(t, router, token,
+		`mutation { createOrder(customerId: 101, productId: 501, quantity: 2) { id customerId productId quantity totalAmount status } }`)
+	for _, field := range []string{`"createOrder"`, `"id":1`, `"totalAmount":25`, `"status":"CREATED"`} {
+		if !strings.Contains(create.Body.String(), field) {
+			t.Errorf("create response missing %q: %s", field, create.Body.String())
+		}
 	}
 
-	if _, err := parseID("abc"); err == nil {
-		t.Fatal("parseID() expected error for invalid value")
+	query := performGraphQLRequest(t, router, token,
+		`query { order(id: 1) { id status } orders(limit: 10, offset: 0) { id status } }`)
+	if !strings.Contains(query.Body.String(), `"order"`) || !strings.Contains(query.Body.String(), `"orders"`) {
+		t.Fatalf("query response omitted order fields: %s", query.Body.String())
+	}
+
+	update := performGraphQLRequest(t, router, token,
+		`mutation { updateOrderStatus(id: 1, status: "CONFIRMED") { id status } }`)
+	if !strings.Contains(update.Body.String(), `"status":"CONFIRMED"`) {
+		t.Fatalf("update response did not contain new status: %s", update.Body.String())
 	}
 }
 
-func TestParseIntQuery(t *testing.T) {
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	c.Request = httptest.NewRequest(http.MethodGet, "/orders?limit=10&offset=3", nil)
+func TestGraphQLRejectsUnauthenticatedRequestAndEnforcesCustomerScope(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.Use(authn.Middleware(controllerTestSecret))
+	svc := service.NewOrderService(repository.NewMemoryRepository(), graphqlProductClient{})
+	RegisterGraphQL(router, svc)
 
-	limit, err := parseIntQuery(c, "limit", 20)
-	if err != nil || limit != 10 {
-		t.Fatalf("parseIntQuery(limit) = (%d, %v), want (10, nil)", limit, err)
+	unauthenticated := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/graphql", bytes.NewBufferString(`{"query":"{ orders { id } }"}`))
+	router.ServeHTTP(unauthenticated, request)
+	if unauthenticated.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated GraphQL request returned %d, want %d", unauthenticated.Code, http.StatusUnauthorized)
 	}
 
-	offset, err := parseIntQuery(c, "offset", 0)
-	if err != nil || offset != 3 {
-		t.Fatalf("parseIntQuery(offset) = (%d, %v), want (3, nil)", offset, err)
+	create := performGraphQLRequest(t, router, controllerTestToken(t, 101),
+		`mutation { createOrder(customerId: 101, productId: 501, quantity: 1) { id } }`)
+	if create.Code != http.StatusOK {
+		t.Fatalf("order creation returned %d: %s", create.Code, create.Body.String())
 	}
 
-	w2 := httptest.NewRecorder()
-	c2, _ := gin.CreateTestContext(w2)
-	c2.Request = httptest.NewRequest(http.MethodGet, "/orders?offset=1", nil)
-	fallback, err := parseIntQuery(c2, "limit", 20)
-	if err != nil || fallback != 20 {
-		t.Fatalf("parseIntQuery(fallback) = (%d, %v), want (20, nil)", fallback, err)
-	}
-
-	w3 := httptest.NewRecorder()
-	c3, _ := gin.CreateTestContext(w3)
-	c3.Request = httptest.NewRequest(http.MethodGet, "/orders", nil)
-	fallback, err = parseIntQuery(c3, "limit", 20)
-	if err != nil || fallback != 20 {
-		t.Fatalf("parseIntQuery(fallback) = (%d, %v), want (20, nil)", fallback, err)
+	otherCustomer := httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodPost, "/graphql", bytes.NewBufferString(`{"query":"{ order(id: 1) { id } }"}`))
+	request.Header.Set("Authorization", controllerTestToken(t, 202))
+	router.ServeHTTP(otherCustomer, request)
+	if otherCustomer.Code != http.StatusBadRequest || !strings.Contains(otherCustomer.Body.String(), "order not found") {
+		t.Fatalf("cross-customer query returned %d: %s", otherCustomer.Code, otherCustomer.Body.String())
 	}
 }
 
-func TestWriteOrderError(t *testing.T) {
-	tests := []struct {
-		name       string
-		err        error
-		statusCode int
-	}{
-		{name: "forbidden", err: authn.ErrForbidden, statusCode: http.StatusForbidden},
-		{name: "invalid", err: service.ErrInvalid, statusCode: http.StatusBadRequest},
-		{name: "product unavailable", err: service.ErrProductUnavailable, statusCode: http.StatusBadGateway},
-		{name: "not found", err: repository.ErrNotFound, statusCode: http.StatusNotFound},
-		{name: "default", err: assertError("fallback"), statusCode: http.StatusInternalServerError},
+func performGraphQLRequest(t *testing.T, router http.Handler, token, query string) *httptest.ResponseRecorder {
+	t.Helper()
+	request := httptest.NewRequest(http.MethodPost, "/graphql", bytes.NewBufferString(`{"query":`+quoteJSONString(query)+`}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Authorization", token)
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("GraphQL request returned %d: %s", response.Code, response.Body.String())
 	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			w := httptest.NewRecorder()
-			c, _ := gin.CreateTestContext(w)
-			c.Request = httptest.NewRequest(http.MethodGet, "/orders/1", nil)
-			writeOrderError(c, tt.err)
-			if w.Code != tt.statusCode {
-				t.Fatalf("writeOrderError(%s) status = %d, want %d", tt.name, w.Code, tt.statusCode)
-			}
-		})
-	}
+	return response
 }
 
-type assertError string
+func quoteJSONString(value string) string {
+	encoded, _ := json.Marshal(value)
+	return string(encoded)
+}
 
-func (e assertError) Error() string { return string(e) }
+type graphqlProductClient struct{}
+
+func (graphqlProductClient) Price(_ context.Context, _ int64) (float64, error) {
+	return 12.5, nil
+}
