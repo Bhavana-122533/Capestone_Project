@@ -11,14 +11,16 @@ phases:
   pre_build:
     commands:
       - export GOCACHE=/tmp/go-cache
-      - cd "$CODEBUILD_SRC_DIR" && go mod download
+      - cd "$CODEBUILD_SRC_DIR/order-management-week5" && go mod download
 
   build:
     commands:
       - export GOCACHE=/tmp/go-cache
-      - cd "$CODEBUILD_SRC_DIR" && GOOS=linux GOARCH=amd64 go build -o application .
+      - cd "$CODEBUILD_SRC_DIR/order-management-week5" && go test -v ./...
+      - cd "$CODEBUILD_SRC_DIR/order-management-week5" && GOOS=linux GOARCH=amd64 go build -o application .
 
 artifacts:
+  base-directory: order-management-week5
   files:
     - application
     - Procfile
